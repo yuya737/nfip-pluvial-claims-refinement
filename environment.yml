@@ -1,0 +1,23 @@
+name: nfip-cleaning
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pandas
+  - geopandas
+  - shapely
+  - pyarrow
+  - numpy
+  - requests
+  - tqdm
+  - pyyaml
+  - pytz
+  - xarray
+  - zarr
+  - s3fs
+  - fsspec
+  - dask
+  - pip
+  - pip:
+      - fastparquet
+      - timezonefinder

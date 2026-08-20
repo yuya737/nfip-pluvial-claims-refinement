@@ -1,0 +1,54 @@
+# Copy this file to config.yaml and fill in paths for your machine.
+# config.yaml is gitignored — it holds machine-specific absolute paths only.
+
+paths:
+  # Root directory for all pipeline inputs/outputs.
+  data_root: /media/storage0/yuya/NFIP
+
+  # Census Bureau cartographic boundary shapefiles (block groups + ZCTAs),
+  shapefile_root: /media/storage0/yuya/Shapefiles
+
+# Every block-group / ZCTA boundary vintage staged under shapefile_root,
+# keyed by the vintage's own year — NOT by claim decade. Which vintage a
+# given claim actually uses is a separate choice, made per-claim at run
+# time by triangulate_claims.py's --block-group-strategy/--zcta-strategy
+# flags (default / closest / most_recent / drop), so this set just needs
+# to list what's available; add a vintage here to make it selectable by
+# "closest"/"most_recent" without changing anything else.
+block_group_vintages:
+  1990: { glob: "bg*_d90_shp.zip" }
+  2000: { glob: "bg*_d00_shp.zip" }
+  2010: { glob: "gz_2010_*_150_00_500k.zip" }
+  2020: { glob: "cb_2020_*_bg_500k.zip" }
+
+zcta_vintages:
+  # Full TIGER/Line resolution, not PREVGENZ's 500k-scale generalization --
+  # same 2000-census ZCTA delineation (ZCTA5CE00 field), but PREVGENZ's
+  # aggressive simplification (median 58 vertices/ZCTA vs. this file's
+  # 1,198) was costing ~12.6pts of spatial-validation rate for no reason
+  # tied to the actual ZIP boundaries.
+  2000: { file: "tl_2009_us_zcta500.zip", field: "ZCTA5CE00" }
+  2010: { file: "cb_2019_us_zcta510_500k.zip", field: "ZCTA5CE10" }
+  2020: { file: "cb_2020_us_zcta520_500k.zip", field: "ZCTA5CE20" }
+
+# Parameters used only by the "default" matching strategy (see
+# triangulate_claims.py's docstring for the empirical justification of
+# each). closest/most_recent/drop ignore these entirely.
+matching_strategy_defaults:
+  # < cutover uses the 2010 vintage, >= cutover uses the 2020 vintage —
+  # matches the empirical crossover in real censusBlockGroupFips values.
+  block_group_cutover_year: 2020
+  # < start: ZCTAs didn't exist yet, so the ZIP source is dropped entirely.
+  # >= start: uses whichever configured ZCTA vintage is most recent.
+  zcta_coverage_start_year: 2000
+
+# Pluvial (causeOfDamage == "4") date-correction settings.
+pluvial_correction:
+  search_window_days: 7        # +/- days searched around the reported date
+  # Default (uniform/constant) precip threshold — see precip_threshold.py.
+  # 7.62 mm/hr = NOAA/NWS "Heavy Rain" (0.30 in/hr, exact: 0.30 * 25.4).
+  # correct_pluvial_dates.py --threshold-netcdf <path> uses a spatially-
+  # varying grid from a NetCDF file instead, for a single run, without
+  # touching this value.
+  min_hourly_precip_mm: 7.62
+  aorc_coverage_start: "1979-01-01"   # AORC v1.1 CONUS coverage begins 1979-01-01
