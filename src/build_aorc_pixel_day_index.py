@@ -1,7 +1,8 @@
 """Build the list of (pixel, day, timezone) values actually needed from AORC.
 
 Only pluvial claims (causeOfDamage == "4") get their reported date checked
-against precipitation. For each
+against precipitation — see docs/methods.md for why "4" is used as a proxy
+for rain-driven flooding and what that does and doesn't capture. For each
 such claim we need the hourly precipitation at its location for every day
 in a +/- search-window-day range around the reported date, so we can
 (a) accept the reported date if its day's precip already clears the

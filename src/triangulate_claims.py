@@ -12,15 +12,15 @@ location and is usually far smaller than any single source's region alone.
 Matching strategy is a flag, not a fixed choice
 --------------------------------------------------
 Which boundary vintage a claim's block-group FIPS / ZIP code gets checked
-against is a real methodological judgment call, and reasonable people can
-weigh the tradeoffs differently. Rather than bake in one answer,
-`--block-group-strategy` and `--zcta-strategy` each independently select
-one of:
+against is a real methodological judgment call (see docs/methods.md for
+the empirical backstory), and reasonable people can weigh the tradeoffs
+differently. Rather than bake in one answer, `--block-group-strategy` and
+`--zcta-strategy` each independently select one of:
 
   default       Block group: < matching_strategy_defaults.block_group_cutover_year
                 (2020) uses the 2010 vintage, >= it uses the 2020 vintage —
                 matches the empirical crossover in real censusBlockGroupFips
-                values. ZIP: < zcta_coverage_start_year
+                values (see docs/methods.md). ZIP: < zcta_coverage_start_year
                 (2000) is dropped entirely (no ZCTA vintage existed yet, and
                 unlike block group, FEMA doesn't geocode ZIP — it's raw WYO-
                 reported data, so there's no vintage-drift argument for
@@ -78,7 +78,10 @@ GeometryByVintage = Dict[int, GeometryByCode]
 STRATEGIES = ["default", "closest", "most_recent", "drop"]
 
 
-def create_lat_lon_rect(lat: float, lon: float, buffer_degrees: float = 0.05):
+LATLON_BOX_BUFFER_DEGREES = 0.05  # 0.05 each side -> a 0.1-degree box; shared with main()'s bulk area computation
+
+
+def create_lat_lon_rect(lat: float, lon: float, buffer_degrees: float = LATLON_BOX_BUFFER_DEGREES):
     """Rectangular box around a lat/lon point, in WGS84 (EPSG:4326).
 
     buffer_degrees=0.05 gives a 0.1-degree box, matching FEMA's stated
@@ -280,7 +283,13 @@ def triangulate_geometry(
         geometry, is_empty = None, None
     else:
         geometry = shapely.intersection_all(geometries)
-        is_empty = geometry.is_empty
+        # geometry.is_empty alone misses the case where sources merely touch
+        # (share a boundary edge or a single corner) rather than overlap --
+        # GEOS returns a valid, non-empty LineString/Point/GeometryCollection
+        # for that, not an empty result, so it must be caught separately via
+        # area to actually honor this module's stated intent of never
+        # publishing a zero-area "polygon" (see docstring above).
+        is_empty = geometry.is_empty or geometry.area == 0
 
     return pd.Series(
         {
@@ -301,7 +310,10 @@ def main():
     parser.add_argument("--input", default=str(INFLATION_ADJUSTED_PARQUET))
     parser.add_argument("--output", default=str(TRIANGULATED_PARQUET))
     parser.add_argument("--block-group-strategy", choices=STRATEGIES, default="default")
-    parser.add_argument("--zcta-strategy", choices=STRATEGIES, default="default")
+    # Shipped default is "closest", not the "default" strategy — see docs/methods.md.
+    # The "default" strategy (drop pre-2000, most-recent post-2000) is still available
+    # via --zcta-strategy default for anyone who wants that specific rule.
+    parser.add_argument("--zcta-strategy", choices=STRATEGIES, default="closest")
     parser.add_argument(
         "--cause-of-damage",
         default=None,
@@ -369,12 +381,37 @@ def main():
         print(
             f"\n{n_empty:,} claims had a non-empty source list but an EMPTY final "
             "intersection (sources validated individually against lat/lon but don't "
-            "overlap each other)"
+            "overlap each other) — see docs/methods.md"
         )
     print("\nBlock-group match status breakdown:")
     print(claims_df["block_group_match_status"].value_counts())
     print("\nZIP match status breakdown:")
     print(claims_df["zip_match_status"].value_counts())
+
+    # Area (m^2, EPSG:5070 is equal-area so this is exact physical area) of the
+    # 0.1-degree lat/lon box itself at each claim's location -- the same box
+    # create_lat_lon_rect builds per-row above, but built vectorized here
+    # (shapely.box accepts array input) since a second per-row apply over
+    # 1.15M rows would just re-pay triangulate_geometry's cost for no reason.
+    # This is the strict upper bound on that claim's final intersected area
+    # (see module docstring), so (1 - geometry.area / latlon_box_area_m2) is
+    # the fraction the other sources shrank the box by.
+    print("\nComputing 0.1-degree lat/lon box area (m^2) at each claim's location...")
+    has_latlon = claims_df["latitude"].notna() & claims_df["longitude"].notna()
+    box_geoms = shapely.box(
+        claims_df.loc[has_latlon, "longitude"].to_numpy() - LATLON_BOX_BUFFER_DEGREES,
+        claims_df.loc[has_latlon, "latitude"].to_numpy() - LATLON_BOX_BUFFER_DEGREES,
+        claims_df.loc[has_latlon, "longitude"].to_numpy() + LATLON_BOX_BUFFER_DEGREES,
+        claims_df.loc[has_latlon, "latitude"].to_numpy() + LATLON_BOX_BUFFER_DEGREES,
+    )
+    box_areas_m2 = (
+        gpd.GeoSeries(box_geoms, crs="EPSG:4326", index=claims_df.index[has_latlon])
+        .to_crs("EPSG:5070")
+        .area
+    )
+    claims_df["latlon_box_area_m2"] = pd.NA
+    claims_df.loc[has_latlon, "latlon_box_area_m2"] = box_areas_m2
+    claims_df["latlon_box_area_m2"] = claims_df["latlon_box_area_m2"].astype(float)
 
     has_geometry = claims_df["geometry"].notna() & ~claims_df["geometry_is_empty"].fillna(True)
     claims_gdf = (
@@ -383,8 +420,38 @@ def main():
         .to_crs("EPSG:5070")
     )
 
+    # geometry_is_empty's area check above runs in EPSG:4326 (degree-scale
+    # coordinates), where a degenerate "needle" polygon can still compute a
+    # vanishingly small but nonzero float area and so survive. The same
+    # polygon's area, recomputed here in EPSG:5070 (coordinates in the
+    # hundreds of thousands to millions of meters), can catastrophically
+    # cancel to exactly 0.0 in the shoelace-formula sum -- so re-check area
+    # in the CRS that's actually published, rather than trusting the
+    # degree-space check alone.
+    still_zero_area = claims_gdf.geometry.area == 0
+    if still_zero_area.any():
+        print(
+            f"Excluding {still_zero_area.sum():,} more claims with zero area after "
+            "reprojection to EPSG:5070 (degenerate slivers the EPSG:4326-space check missed)"
+        )
+        claims_gdf = claims_gdf[~still_zero_area]
+
     print(f"\nMean claim area:   {claims_gdf.geometry.area.mean() / 1e6:.3f} km^2")
     print(f"Median claim area: {claims_gdf.geometry.area.median() / 1e6:.3f} km^2")
+    pct_reduction = 1 - claims_gdf.geometry.area / claims_gdf["latlon_box_area_m2"]
+    print(f"Mean/median area reduction vs. the 0.1-degree box: {pct_reduction.mean():.1%} / {pct_reduction.median():.1%}")
+
+    # Every surviving row has geometry_is_empty == False by construction (has_geometry
+    # excludes True/NaN already), so it's constant and carries no information here --
+    # useful during the pipeline run for the diagnostic count above, not in the output.
+    # latlon_box_area_m2 likewise only exists to feed the area-reduction print above --
+    # drop both rather than ship run-time diagnostics as output columns.
+    claims_gdf = claims_gdf.drop(columns=["geometry_is_empty", "latlon_box_area_m2"])
+    # has_geometry above is a boolean mask into claims_df, which still carries the
+    # original row positions from the full (pre-CONUS/pluvial-filter) population as
+    # its index -- reset before writing so a stray __index_level_0__ column doesn't
+    # get persisted (to_parquet writes the index by default).
+    claims_gdf = claims_gdf.reset_index(drop=True)
 
     claims_gdf.to_parquet(args.output)
     print(f"\nWrote {len(claims_gdf):,} rows to {args.output}")

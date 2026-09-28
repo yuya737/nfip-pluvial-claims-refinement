@@ -1,8 +1,8 @@
 """Download the raw FEMA OpenFEMA claims extract and the FRED inflation series.
 
 Sources (both public, no authentication required):
-  - FEMA OpenFEMA "FIMA NFIP Redacted Claims v2":
-    https://www.fema.gov/about/reports-and-data/openfema/FimaNfipClaims.parquet
+  - FEMA OpenFEMA "FIMA NFIP Redacted Claims v3":
+    https://www.fema.gov/about/reports-and-data/openfema/v3/NfipClaimsV3.parquet
   - FRED personal consumption expenditures price index (DPCERD3Q086SBEA),
     used downstream to inflation-adjust dollar fields:
     https://fred.stlouisfed.org/series/DPCERD3Q086SBEA
@@ -19,7 +19,7 @@ import requests
 
 from paths import RAW_DIR, RAW_CLAIMS_PARQUET
 
-FEMA_CLAIMS_URL = "https://www.fema.gov/about/reports-and-data/openfema/FimaNfipClaims.parquet"
+FEMA_CLAIMS_URL = "https://www.fema.gov/about/reports-and-data/openfema/v3/NfipClaimsV3.parquet"
 FRED_SERIES_ID = "DPCERD3Q086SBEA"
 FRED_URL_TEMPLATE = (
     "https://fred.stlouisfed.org/graph/fredgraph.csv"

@@ -13,7 +13,7 @@ claim's bilinear-interpolation corners.
 The full series (rather than a precomputed max) is needed because
 correct_pluvial_dates.py bilinearly interpolates the 4 corner pixels'
 *hourly* values at each claim's exact location before taking the day's
-max. Since 04a
+max — see docs/methods.md for why that ordering matters. Since 04a
 resolves time zone once per claim and applies it to all 4 of that claim's
 corners, the 4 corners' hourly series are guaranteed to share identical
 UTC timestamps for a given claim-day, so 04c can combine them with a
@@ -31,6 +31,7 @@ need are read as one batched request per store-year rather than the cross
 product of all pixels x all hours in that year.
 """
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
@@ -44,6 +45,9 @@ from paths import AORC_REQUEST_INDEX_PARQUET, AORC_HOURLY_PARQUET
 AORC_S3_TEMPLATE = "s3://noaa-nws-aorc-v1-1-1km/{year}.zarr"
 YEAR_FETCH_WORKERS = 6
 REQUEST_INDEX_CHUNK_SIZE = 2_000_000
+KEY_COLS = ["aorc_pixel_row", "aorc_pixel_col", "iana_timezone", "date"]
+NEW_ROWS_TMP_PARQUET = AORC_HOURLY_PARQUET.with_suffix(".new.parquet")
+MERGED_TMP_PARQUET = AORC_HOURLY_PARQUET.with_suffix(".merged.parquet")
 
 
 def local_day_utc_hours(date: pd.Timestamp, iana_timezone: str) -> pd.DatetimeIndex:
@@ -168,12 +172,57 @@ def process_chunk(chunk: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def missing_request_rows(request_index: pd.DataFrame) -> pd.DataFrame:
+    """request_index rows not already present in AORC_HOURLY_PARQUET, by (pixel, day, timezone).
+
+    Re-running this script (e.g. after triangulation picks up more claims)
+    used to always re-fetch every requested (pixel, day, timezone) triple
+    from S3 from scratch, even the ones an earlier run already pulled --
+    slow and wasteful of a public NOAA bucket's bandwidth. Only the key
+    columns are read here (not the heavy hours_utc/precip_mm list columns),
+    so checking what's already fetched is cheap even against a large
+    existing file.
+    """
+    if not AORC_HOURLY_PARQUET.exists():
+        print("No existing output found -- fetching all requested (pixel, day, timezone) triples")
+        return request_index
+    existing = pd.read_parquet(AORC_HOURLY_PARQUET, columns=KEY_COLS).drop_duplicates()
+    print(f"Found existing {AORC_HOURLY_PARQUET} with {len(existing):,} (pixel, day, timezone) triples already fetched")
+    merged = request_index.merge(existing, on=KEY_COLS, how="left", indicator=True)
+    missing = merged.loc[merged["_merge"] == "left_only", KEY_COLS].reset_index(drop=True)
+    print(f"{len(missing):,} / {len(request_index):,} triples not yet fetched -- pulling only these")
+    return missing
+
+
+def stream_copy(src_path, writer: pq.ParquetWriter, batch_size=200_000):
+    """Copy one parquet file's rows into an already-open writer, batch by batch.
+
+    Never materializes the source as a pandas DataFrame -- hours_utc/precip_mm
+    are list<...> columns that are cheap in Arrow's columnar layout but heavy
+    once unpacked into Python list objects (see process_chunk's docstring
+    below), so merging old+new output by reading both fully into pandas and
+    concatenating would reintroduce the same OOM risk that made this script
+    chunk its fetches in the first place.
+    """
+    pf = pq.ParquetFile(src_path)
+    for batch in pf.iter_batches(batch_size=batch_size):
+        table = pa.Table.from_batches([batch]).cast(writer.schema)
+        writer.write_table(table)
+
+
 def main():
-    """Fetch every chunk of the request index and stream the results to AORC_HOURLY_PARQUET."""
+    """Fetch only the not-yet-fetched chunk of the request index, and merge
+    the result into AORC_HOURLY_PARQUET alongside whatever was already there."""
     print(f"Loading request index from {AORC_REQUEST_INDEX_PARQUET}...")
     request_index = pd.read_parquet(AORC_REQUEST_INDEX_PARQUET)
     request_index["date"] = pd.to_datetime(request_index["date"])
-    print(f"{len(request_index):,} unique (pixel, day, timezone) triples")
+    print(f"{len(request_index):,} unique (pixel, day, timezone) triples requested")
+
+    had_existing_output = AORC_HOURLY_PARQUET.exists()
+    request_index = missing_request_rows(request_index)
+    if len(request_index) == 0:
+        print(f"\nNothing new to fetch -- {AORC_HOURLY_PARQUET} already covers every requested triple.")
+        return
 
     # Processed in chunks, not all at once: exploding to hourly rows and
     # fetching/sorting/grouping them is memory-hungry (each step roughly
@@ -200,7 +249,7 @@ def main():
 
             table = pa.Table.from_pandas(result, preserve_index=False)
             if writer is None:
-                writer = pq.ParquetWriter(AORC_HOURLY_PARQUET, table.schema)
+                writer = pq.ParquetWriter(NEW_ROWS_TMP_PARQUET, table.schema)
             else:
                 table = table.cast(writer.schema)  # keep every chunk's types consistent
             writer.write_table(table)
@@ -212,8 +261,23 @@ def main():
             writer.close()
 
     if total_missing:
-        print(f"\n{total_missing:,} / {total_written:,} (pixel, day) pairs got zero hourly values")
-    print(f"\nWrote {total_written:,} rows to {AORC_HOURLY_PARQUET}")
+        print(f"\n{total_missing:,} / {total_written:,} newly-fetched (pixel, day) pairs got zero hourly values")
+
+    if had_existing_output:
+        print(f"\nMerging {total_written:,} newly-fetched rows into the existing {AORC_HOURLY_PARQUET}...")
+        pf = pq.ParquetFile(NEW_ROWS_TMP_PARQUET)
+        merge_writer = pq.ParquetWriter(MERGED_TMP_PARQUET, pf.schema_arrow)
+        try:
+            stream_copy(AORC_HOURLY_PARQUET, merge_writer)
+            stream_copy(NEW_ROWS_TMP_PARQUET, merge_writer)
+        finally:
+            merge_writer.close()
+        os.replace(MERGED_TMP_PARQUET, AORC_HOURLY_PARQUET)
+        os.remove(NEW_ROWS_TMP_PARQUET)
+    else:
+        os.replace(NEW_ROWS_TMP_PARQUET, AORC_HOURLY_PARQUET)
+
+    print(f"\nWrote {total_written:,} newly-fetched rows to {AORC_HOURLY_PARQUET}")
 
 
 if __name__ == "__main__":

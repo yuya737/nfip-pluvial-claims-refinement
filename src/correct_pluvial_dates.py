@@ -8,6 +8,10 @@ treats it as the corrected date. Every claim keeps its original dateOfLoss
 column; correctedDateOfLoss and pluvialCorrectionStatus record what
 happened so downstream users can choose which date to trust, rather than
 having the correction silently overwrite the source record.
+pluvialCorrectionMaxPrecipMm is the max hourly precip on whichever day was
+ultimately used (reported or corrected); reportedDateMaxPrecipMm is always
+the reported dateOfLoss's value specifically, even for a "corrected" claim,
+so the original day's precip is never lost.
 
 Each claim's precipitation value is a bilinear interpolation of its 4
 AORC corner pixels' hourly values (04a/04b), combined at the claim's exact
@@ -164,7 +168,10 @@ def classify_batch(lookup_batch: pd.DataFrame, hourly: pd.DataFrame, threshold_b
     per_claim[["correctedDateOfLoss", "pluvialCorrectionStatus", "pluvialCorrectionMaxPrecipMm"]] = (
         per_claim.apply(classify, axis=1)
     )
-    return per_claim.drop(columns="threshold_mm")
+    return (
+        per_claim.drop(columns="threshold_mm")
+        .rename(columns={"reported_day_precip_mm": "reportedDateMaxPrecipMm"})
+    )
 
 
 def main():
@@ -268,11 +275,17 @@ def main():
         excluded
     )
     claims_gdf["pluvialCorrectionMaxPrecipMm"] = np.nan
+    claims_gdf["reportedDateMaxPrecipMm"] = np.nan
 
     corrected_indexed = per_claim.set_index("id")
     evaluated = claims_gdf["id"].isin(corrected_indexed.index)
     evaluated_ids = claims_gdf.loc[evaluated, "id"]
-    for col in ["correctedDateOfLoss", "pluvialCorrectionStatus", "pluvialCorrectionMaxPrecipMm"]:
+    for col in [
+        "correctedDateOfLoss",
+        "pluvialCorrectionStatus",
+        "pluvialCorrectionMaxPrecipMm",
+        "reportedDateMaxPrecipMm",
+    ]:
         claims_gdf.loc[evaluated, col] = evaluated_ids.map(corrected_indexed[col])
 
     claims_gdf.to_parquet(PLUVIAL_CORRECTED_PARQUET)

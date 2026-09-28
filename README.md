@@ -13,7 +13,7 @@ signals, and (3) corrects likely-erroneous reported dates for pluvial
 
 ```
 src/            pipeline scripts, run in dependency order (see run_pipeline.sh)
-docs/           data dictionary
+docs/           data dictionary and methodology notes
 data/raw/       downloaded source files (gitignored — see below)
 data/interim/   intermediate pipeline outputs (gitignored) — current end-of-pipeline output lives here for now, see below
 data/processed/ intended home for the final released dataset; not populated by the default run yet
@@ -33,10 +33,10 @@ cp config.yaml.example config.yaml   # edit paths for your machine
 and is gitignored; every script reads paths through `src/paths.py`
 rather than hardcoding them.
 
-Census block-group and ZCTA shapefiles are not fetched automatically —
-download them from the Census Bureau (cartographic boundary files) and
-point `config.yaml` at them. AORC and the raw FEMA/FRED extracts *are*
-fetched automatically by the pipeline.
+Census block-group and ZCTA shapefiles, AORC precipitation data, and the
+raw FEMA/FRED extracts are all fetched automatically by the pipeline
+(`download_shapefiles.py`, `fetch_aorc_daily_max.py`, `download_claims.py`
+respectively) — no manual downloads needed.
 
 ## Running the pipeline
 
@@ -51,10 +51,11 @@ each reads its inputs from the previous step's output path
 
 1. `download_claims.py` — raw FEMA claims + FRED inflation series
 2. `adjust_inflation.py` — inflation-adjust dollar fields
-3. `triangulate_claims.py` — triangulate spatial uncertainty polygons
-4. `build_aorc_pixel_day_index.py` — index of AORC bilinear-corner pixel/days needed for pluvial claims
-5. `fetch_aorc_daily_max.py` — fetch hourly precip for those pixel/days from public AORC
-6. `correct_pluvial_dates.py` — bilinearly interpolate the 4 corner pixels, then apply the date correction
+3. `download_shapefiles.py` — Census block-group/ZCTA boundary shapefiles (skip-if-exists)
+4. `triangulate_claims.py` — triangulate spatial uncertainty polygons
+5. `build_aorc_pixel_day_index.py` — index of AORC bilinear-corner pixel/days needed for pluvial claims
+6. `fetch_aorc_daily_max.py` — fetch hourly precip for those pixel/days from public AORC
+7. `correct_pluvial_dates.py` — bilinearly interpolate the 4 corner pixels, then apply the date correction
 
 
 ### Key flags

@@ -3,9 +3,6 @@
 Every dollar-denominated claim field is converted to a fixed target year's
 dollars by matching each claim to the CPI-style price index for its loss
 quarter and rescaling to the target year's index value.
-
-Target year defaults to 2021. Pass --target-year to adjust to a
-different year for other uses.
 """
 
 import argparse
@@ -67,7 +64,7 @@ def adjust_to_target_year(claims_df: pd.DataFrame, target_year: int) -> pd.DataF
             f"{inflation_df['observation_date'].dt.year.max()})"
         )
     # Use the first (Q1) observation of the target year as the reference index,
-    # matching the convention used elsewhere in this pipeline.
+    # matching the convention used elsewhere in this pipeline (see docs/methods.md).
     target_index = target_row.iloc[0]["DPCERD3Q086SBEA"]
     print(f"Adjusting all dollar fields to {target_year} dollars (index={target_index})")
 
@@ -122,13 +119,17 @@ def main():
         "--target-year",
         type=int,
         default=2021,
-        help="Dollar-year to adjust all monetary fields to (default: 2021)",
+        help="Dollar-year to adjust all monetary fields to (default: 2021, matching NSI vintage)",
     )
     args = parser.parse_args()
 
     print(f"Loading raw claims from {RAW_CLAIMS_PARQUET}...")
     claims_df = pd.read_parquet(RAW_CLAIMS_PARQUET)
     print(f"Loaded {len(claims_df):,} claims")
+
+    if "censusGeoid" in claims_df.columns:
+        claims_df = claims_df.rename(columns={"censusGeoid": "censusBlockGroupFips"})
+        claims_df["censusTract"] = claims_df["censusBlockGroupFips"].str[:11]
 
     adjusted_df = adjust_to_target_year(claims_df, args.target_year)
     adjusted_df.to_parquet(INFLATION_ADJUSTED_PARQUET, index=False)

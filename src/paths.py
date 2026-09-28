@@ -45,15 +45,20 @@ PLUVIAL_SEARCH_WINDOW_DAYS = _config["pluvial_correction"]["search_window_days"]
 PLUVIAL_MIN_HOURLY_PRECIP_MM = _config["pluvial_correction"]["min_hourly_precip_mm"]
 AORC_COVERAGE_START = _config["pluvial_correction"]["aorc_coverage_start"]
 
-# FEMA's causeOfDamage code for pluvial (rain-driven) claims, used as a
-# proxy rather than a clean label.
+# FEMA's causeOfDamage code for pluvial (rain-driven) claims — see
+# docs/methods.md for why this code is used as a proxy, not a clean label.
 # Shared here so triangulate_claims.py's --cause-of-damage filter and
 # build_aorc_pixel_day_index.py's pluvial-only restriction can't drift
 # out of sync with each other.
 PLUVIAL_CAUSE_CODE = "4"
 
 # Raw / interim / processed file names, referenced by multiple pipeline steps.
-RAW_CLAIMS_PARQUET = RAW_DIR / "FimaNfipClaims.parquet"
+# NfipClaimsV3.parquet is FEMA's refreshed OpenFEMA export (more rows,
+# renamed/added columns vs. the older FimaNfipClaims.parquet -- e.g.
+# censusBlockGroupFips became censusGeoid). adjust_inflation.py renames it
+# back to the old field names right after loading, so every downstream
+# script keeps working unchanged.
+RAW_CLAIMS_PARQUET = RAW_DIR / "NfipClaimsV3.parquet"
 FRED_INFLATION_GLOB = str(RAW_DIR / "FRED_Inflation_DPCERD3Q086SBEA_*.csv")
 
 INFLATION_ADJUSTED_PARQUET = INTERIM_DIR / "FimaNfipClaims_InflationAdjusted.parquet"
@@ -63,5 +68,3 @@ CLAIM_PIXEL_LOOKUP_PARQUET = INTERIM_DIR / "pluvial_claim_pixel_lookup.parquet"
 EXCLUDED_PLUVIAL_CLAIMS_PARQUET = INTERIM_DIR / "pluvial_claims_excluded_from_correction.parquet"
 AORC_HOURLY_PARQUET = INTERIM_DIR / "aorc_hourly_precip.parquet"
 PLUVIAL_CORRECTED_PARQUET = INTERIM_DIR / "claims_pluvial_corrected.parquet"
-
-FINAL_CLAIMS_PARQUET_TEMPLATE = str(PROCESSED_DIR / "nfip_claims_refined_{year}.parquet")

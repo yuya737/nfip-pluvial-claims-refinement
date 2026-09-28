@@ -6,7 +6,7 @@ All original columns from the FEMA OpenFEMA `FimaNfipClaims` extract are
 preserved unchanged (see FEMA's own data dictionary for those:
 https://www.fema.gov/openfema-data-page/fima-nfip-redacted-claims-v2).
 The columns below are the ones this pipeline adds, grouped by the step
-that produces them.
+that produces them — see `docs/methods.md` for what each step does.
 
 ## Added by inflation adjustment (`adjust_inflation.py`)
 
@@ -22,17 +22,18 @@ that produces them.
 
 | Column | Type | Description |
 |---|---|---|
-| `geometry` | polygon (EPSG:5070) | Intersection of whichever of {block-group boundary, ZCTA boundary, lat/lon box} were available *and spatially validated* for the claim — a strict upper bound on the claim's true location. |
+| `geometry` | polygon (EPSG:5070) | Intersection of whichever of {block-group boundary, ZCTA boundary, lat/lon box} were available *and spatially validated* for the claim (see `docs/methods.md`) — a strict upper bound on the claim's true location. |
 | `n_geometry_sources` | int | How many of the three sources contributed (1-3) in this file. Claims with 0 contributing sources, or whose sources intersect to an empty polygon, are dropped before this file is written. |
 | `geometry_sources` | string | Which sources contributed, e.g. `"block_group+zip+latlon"`, `"block_group+latlon"`. |
-| `block_group_vintage_used` | int or null | Which vintage year (e.g. `1990`, `2000`, `2010`, `2020`) `--block-group-strategy` selected for this claim — a lookup key into `config.yaml`'s `block_group_vintages`. Null when the strategy is `drop`, or when no vintage was selected for another reason. Independent of `zip_vintage_used`: the two strategies (and therefore the two vintages chosen) don't have to agree, even both left at `default`. |
+| `block_group_vintage_used` | int or null | Which vintage year (e.g. `1990`, `2000`, `2010`, `2020`) `--block-group-strategy` selected for this claim — a lookup key into `config.yaml`'s `block_group_vintages`. Null when the strategy is `drop`, or when no vintage was selected for another reason. Independent of `zip_vintage_used`: the two strategies (and therefore the two vintages chosen) don't have to agree, even both left at `default` — see `docs/methods.md`. |
 | `zip_vintage_used` | int or null | Same, for `--zcta-strategy` and `config.yaml`'s `zcta_vintages`. |
 | `block_group_match_status` | string | `not_found`, `validated`, `unvalidated_no_latlon`, `spatially_inconsistent`, `dropped_by_strategy` (`--block-group-strategy drop`), or `no_vintage_selected` — see `select_validated_geometry` / `triangulate_geometry` in `triangulate_claims.py`. |
-| `zip_match_status` | string | Same status values as `block_group_match_status`, plus `before_zcta_coverage`: under the `default` strategy specifically, claims with `yearOfLoss` before `zcta_coverage_start_year` (2000) get this status rather than `dropped_by_strategy` — no ZCTA vintage existed yet, so the ZIP source isn't attempted at all. (`closest`/`most_recent` don't observe this gate and will check even pre-2000 claims against a modern ZCTA — deliberately.) |
+| `zip_match_status` | string | Same status values as `block_group_match_status`, plus `before_zcta_coverage`: under the `default` strategy specifically, claims with `yearOfLoss` before `zcta_coverage_start_year` (2000) get this status rather than `dropped_by_strategy` — no ZCTA vintage existed yet, so the ZIP source isn't attempted at all. (`closest`/`most_recent` don't observe this gate and will check even pre-2000 claims against a modern ZCTA — deliberately, see `docs/methods.md`.) |
 
 ## Added by pluvial date correction (`build_aorc_pixel_day_index.py` / `fetch_aorc_daily_max.py` / `correct_pluvial_dates.py`)
 
-Only meaningful for `causeOfDamage == "4"` claims.
+Only meaningful for `causeOfDamage == "4"` claims; see `docs/methods.md`
+for why that code is used and its limits as a pluvial-claim filter.
 
 | Column | Type | Description |
 |---|---|---|
